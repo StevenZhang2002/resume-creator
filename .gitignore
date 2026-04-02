@@ -8,9 +8,16 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
-dist
+frontend/node_modules
+frontend/dist
 dist-ssr
 *.local
+
+# Backend
+backend/__pycache__
+backend/venv
+backend/env
+*.pyc
 
 # Editor directories and files
 .vscode/*
