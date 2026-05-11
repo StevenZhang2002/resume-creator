@@ -120,12 +120,12 @@ export interface ResumeData {
 // 默认模板数据
 export const defaultResumeData: ResumeData = {
   personalInfo: {
-    name: "BOWEN ZHANG",
+    name: "ZHANG SAN",
     email: "bowen.zhang@example.edu",
     phone: "+86 138-0000-0000",
     address: "Beijing, China",
     website: "https://bowenzhang.github.io",
-    github: "https://github.com/bowenzhang",
+    github: "https://github.com/zhangsan",
     googleScholar: "https://scholar.google.com/citations?user=xxx",
   },
   education: [
@@ -160,7 +160,7 @@ export const defaultResumeData: ResumeData = {
   publications: [
     {
       title: "Enhanced Attention Mechanisms for Low-Resource Machine Translation",
-      authors: ["Bowen Zhang*", "Xiaoming Li", "Yanyan Wang"],
+      authors: ["Zhang San*", "Xiaoming Li", "Yanyan Wang"],
       venue: "Annual Meeting of the Association for Computational Linguistics (ACL)",
       year: 2024,
       status: "published",
@@ -186,7 +186,7 @@ export const defaultResumeData: ResumeData = {
       role: "Creator & Maintainer",
       startDate: "2021-09",
       endDate: "Present",
-      url: "https://github.com/bowenzhang/nlp-toolkit",
+      url: "https://github.com/zhangsan/nlp-toolkit",
       description: [
         "Built a lightweight NLP library in Python with 2K+ stars on GitHub",
         "Designed modular architecture supporting easy extension for new tasks",

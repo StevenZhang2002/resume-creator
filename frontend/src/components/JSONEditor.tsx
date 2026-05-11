@@ -160,6 +160,7 @@ export default function JSONEditor({ value, onChange, onError, onFormat, onReset
           />
         ) : (
           <Editor
+            key="monaco-editor"
             height="100%"
             defaultLanguage="json"
             value={value}

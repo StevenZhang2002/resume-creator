@@ -1,6 +1,31 @@
 import type { ResumeData } from '../types/resume';
+import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { FileDown } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+
+// Error boundary to prevent render errors from cascading
+class PreviewErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error: string }> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: '' };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error: error.message };
+  }
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('[ResumePreview] Render error:', error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 20, color: '#f87171', fontFamily: 'sans-serif', fontSize: 14 }}>
+          <p>Preview render error: {this.state.error}</p>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 interface PreviewProps {
   data: ResumeData;
@@ -11,9 +36,6 @@ interface PreviewProps {
 const A4_HEIGHT_MM = 297;
 const A4_WIDTH_MM = 210;
 
-// 估计每行的高度（mm）
-const LINE_HEIGHT_MM = 4.5;
-
 export default function ResumePreview({ data, onExportPDF }: PreviewProps) {
   const { personalInfo, education, researchExperience, publications, internshipExperience, projectExperience, awards, skills, academicService, config } = data;
   const [pages, setPages] = useState<React.ReactNode[]>([]);
@@ -21,6 +43,8 @@ export default function ResumePreview({ data, onExportPDF }: PreviewProps) {
 
   const pageMargin = config.pageMargin || 25; // 默认 25mm
   const CONTENT_HEIGHT_MM = A4_HEIGHT_MM - pageMargin * 2;
+  const CONTENT_WIDTH_MM = A4_WIDTH_MM - pageMargin * 2;
+  const PX_PER_MM = 3.78; // 96 DPI
 
   // 根据配置计算字体大小
   const getFontSize = () => {
@@ -39,472 +63,674 @@ export default function ResumePreview({ data, onExportPDF }: PreviewProps) {
     return '"Times New Roman", Times, Georgia, serif';
   };
 
-  // 估算内容高度（mm）
-  const estimateHeight = (content: React.ReactNode): number => {
-    // 简化的估算逻辑
-    if (typeof content === 'string') {
-      const lines = Math.ceil(content.length / 80);
-      return lines * LINE_HEIGHT_MM;
-    }
-    return LINE_HEIGHT_MM * 3; // 默认估算
+  // ========== 隐藏容器测量 ==========
+
+  interface MeasuredEntry {
+    content: React.ReactNode;
+    heightMm: number;
+  }
+
+  interface MeasuredSection {
+    title: string;
+    type: string;
+    headingHeightMm: number;
+    entries: MeasuredEntry[];
+    sectionGapMm: number; // section 之间的 marginBottom
+  }
+
+  const createHiddenContainer = (): HTMLDivElement => {
+    const container = document.createElement('div');
+    container.style.cssText = `
+      position: absolute;
+      left: -9999px;
+      top: -9999px;
+      visibility: hidden;
+      width: ${CONTENT_WIDTH_MM}mm;
+      font-size: ${getFontSize()};
+      font-family: ${getBodyFontFamily()};
+    `;
+    return container;
   };
 
-  // 将模块分配到页面
-  const paginateContent = () => {
-    // 根据字体大小获取行高系数
-    const getLineHeightFactor = () => {
-      switch (config.fontSize) {
-        case 'small': return 0.95;
-        case 'large': return 1.2;
-        default: return 1.05;
-      }
+  // 构建用于测量的 DOM 元素（不经过 React）
+  const buildSectionElements = (
+    container: HTMLDivElement,
+  ): MeasuredSection[] => {
+    const fontSize = getFontSize();
+    const bodyFont = getBodyFontFamily();
+    const headingFont = getHeadingFontFamily();
+
+    const sectionTitles: Record<string, string> = {
+      education: 'Education',
+      researchExperience: 'Research Experience',
+      publications: 'Publications',
+      internshipExperience: 'Professional Experience',
+      projectExperience: 'Projects',
+      awards: 'Honors & Awards',
+      skills: 'Skills',
+      academicService: 'Academic Service',
     };
 
-    const allPages: React.ReactNode[] = [];
-    let pageContent: React.ReactNode[] = [];
-    let pageHeight = 0;
-    let pageIdx = 0;
+    const sectionGaps: Record<string, number> = {
+      education: 8,
+      researchExperience: 10,
+      publications: 8,
+      internshipExperience: 10,
+      projectExperience: 10,
+      awards: 6,
+      skills: 4,
+      academicService: 6,
+    };
 
-    // 个人信息总是放在第一页顶部
-    const headerContent = (
-      <header
-        id="section-personalInfo"
+    const measuredSections: MeasuredSection[] = [];
+
+    const addMeasuredSection = (type: string, items: any[] | undefined, buildEntry: (item: any) => string) => {
+      if (!items || items.length === 0) return;
+
+      const sectionEl = document.createElement('div');
+      sectionEl.style.cssText = `
+        margin-bottom: 16px;
+        font-size: ${fontSize};
+        font-family: ${bodyFont};
+      `;
+
+      // Section heading
+      const heading = document.createElement('h2');
+      heading.style.cssText = `
+        font-size: ${fontSize};
+        font-family: ${headingFont};
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #1a1a1a;
+        border-bottom: ${config.showSectionBorders ? '1px solid #333' : 'none'};
+        padding-bottom: 4px;
+        margin-bottom: 10px;
+        margin-top: 0;
+      `;
+      heading.textContent = sectionTitles[type];
+      sectionEl.appendChild(heading);
+
+      // 测量 heading 高度
+      container.appendChild(sectionEl);
+      void heading.getBoundingClientRect();
+      const headingHeightMm = heading.getBoundingClientRect().height / PX_PER_MM;
+
+      // 测量每个 entry 高度
+      const entries: MeasuredEntry[] = [];
+      items.forEach((item) => {
+        const entryWrapper = document.createElement('div');
+        entryWrapper.style.marginBottom = `${sectionGaps[type] || 8}px`;
+        entryWrapper.innerHTML = buildEntry(item);
+        sectionEl.appendChild(entryWrapper);
+        void entryWrapper.getBoundingClientRect();
+        const heightMm = entryWrapper.getBoundingClientRect().height / PX_PER_MM;
+        entries.push({ content: getEntryContent(type, item), heightMm });
+      });
+
+      measuredSections.push({
+        title: sectionTitles[type],
+        type,
+        headingHeightMm,
+        entries,
+        sectionGapMm: sectionGaps[type] || 8,
+      });
+    };
+
+    // Helper for building entry HTML strings for measurement
+    const fmt = (v: string) => v || '';
+
+    addMeasuredSection('education', education, (edu) => `
+      <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:2px;">
+        <span style="font-weight:600; color:#1a1a1a;">${fmt(edu.institution)}</span>
+        <span style="color:#555; white-space:nowrap; margin-left:12px;">${fmt(edu.startDate)} – ${fmt(edu.endDate || 'Present')}</span>
+      </div>
+      <div style="font-style:italic; color:#333;">
+        ${fmt(edu.degree)} in ${fmt(edu.major)}${edu.location ? `, ${edu.location}` : ''}${(edu.gpa || edu.ranking) ? `<span style="margin-left:12px;">${edu.gpa || ''}${edu.gpa && edu.ranking ? ' | ' : ''}${edu.ranking || ''}</span>` : ''}
+      </div>
+      ${edu.honors && edu.honors.length > 0 ? `<div style="margin-top:4px;">${edu.honors.map((h: string) => `<span style="display:inline-block; background-color:#f3f4f6; color:#374151; padding:2px 8px; border-radius:4px; margin-right:6px; margin-bottom:4px; font-weight:500;">${h}</span>`).join('')}</div>` : ''}
+    `);
+
+    addMeasuredSection('researchExperience', researchExperience, (r) => `
+      <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:2px;">
+        <span style="font-weight:600; color:#1a1a1a;">${fmt(r.title)}</span>
+        <span style="color:#555; white-space:nowrap; margin-left:12px;">${fmt(r.startDate)} – ${fmt(r.endDate || 'Present')}</span>
+      </div>
+      <div style="font-style:italic; color:#333;">
+        ${fmt(r.role)}, ${fmt(r.institution)}${r.location ? `, ${r.location}` : ''}${r.advisor ? ` | Advisor: ${r.advisor}` : ''}
+      </div>
+      <ul style="color:#333; line-height:1.4; margin:4px 0; padding-left:16px; list-style:none;">
+        ${(r.description || []).map((d: string) => `<li style="margin-bottom:3px;">• ${d}</li>`).join('')}
+      </ul>
+    `);
+
+    addMeasuredSection('publications', publications, (pub) => `
+      <div style="color:#333; line-height:1.4; margin:4px 0; padding-left:0;"><strong>${fmt(pub.title)}</strong></div>
+      <div style="color:#333; line-height:1.4; margin:4px 0; padding-left:0;">
+        ${pub.authors.join(', ')}. "${pub.title}." <em>${pub.venue}</em>, ${pub.year}.${pub.status !== 'published' ? `<span style="color:#666;"> [${pub.status.replace('_', ' ')}]</span>` : ''}${pub.doi ? `<div>DOI: ${pub.doi}</div>` : ''}
+      </div>
+    `);
+
+    addMeasuredSection('internshipExperience', internshipExperience, (intern) => `
+      <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:2px;">
+        <span style="font-weight:600; color:#1a1a1a;">${fmt(intern.company)}</span>
+        <span style="color:#555; white-space:nowrap; margin-left:12px;">${fmt(intern.startDate)} – ${fmt(intern.endDate || 'Present')}</span>
+      </div>
+      <div style="font-style:italic; color:#333;">
+        ${fmt(intern.position)}${intern.location ? `, ${intern.location}` : ''}
+      </div>
+      <ul style="color:#333; line-height:1.4; margin:4px 0; padding-left:16px; list-style:none;">
+        ${(intern.description || []).map((d: string) => `<li style="margin-bottom:3px;">• ${d}</li>`).join('')}
+      </ul>
+    `);
+
+    addMeasuredSection('projectExperience', projectExperience, (proj) => `
+      <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:2px;">
+        <span style="font-weight:600; color:#1a1a1a;">${fmt(proj.name)}</span>
+        <span style="color:#555; white-space:nowrap; margin-left:12px;">${fmt(proj.startDate)} – ${fmt(proj.endDate || 'Present')}</span>
+      </div>
+      <div style="font-style:italic; color:#333;">
+        ${fmt(proj.role)}${proj.url ? ` | ${proj.url}` : ''}
+      </div>
+      <ul style="color:#333; line-height:1.4; margin:4px 0; padding-left:16px; list-style:none;">
+        ${(proj.description || []).map((d: string) => `<li style="margin-bottom:3px;">• ${d}</li>`).join('')}
+      </ul>
+      ${proj.technologies && proj.technologies.length > 0 ? `<div style="margin-top:6px;">${proj.technologies.map((t: string) => `<span style="display:inline-block; background-color:#e0e7ff; color:#3730a3; padding:2px 8px; border-radius:4px; margin-right:6px; margin-bottom:4px; font-weight:500;">${t}</span>`).join('')}</div>` : ''}
+    `);
+
+    addMeasuredSection('awards', awards, (award) => `
+      <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:2px;">
+        <span style="font-weight:600; color:#1a1a1a;">${fmt(award.title)}</span>
+        <span style="color:#555; white-space:nowrap; margin-left:12px;">${fmt(award.date)}</span>
+      </div>
+      <div style="font-style:italic; color:#333;">${fmt(award.issuer)}</div>
+      ${award.description ? `<div style="margin-top:6px; padding:8px 12px; background-color:#f9fafb; border-left:3px solid #d1d5db; border-radius:0 4px 4px 0; color:#6b7280; font-style:italic; line-height:1.5;">${award.description}</div>` : ''}
+    `);
+
+    addMeasuredSection('skills', skills, (skill) => `
+      <span style="font-weight:600; color:#1a1a1a; margin-right:8px;">${fmt(skill.category)}:</span>
+      <span style="font-style:italic; color:#333;">${skill.items.join(', ')}</span>
+    `);
+
+    addMeasuredSection('academicService', academicService, (service) => `
+      <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:2px;">
+        <span style="font-weight:600; color:#1a1a1a;">${fmt(service.role)}</span>
+        <span style="color:#555; white-space:nowrap; margin-left:12px;">${fmt(service.startDate)} – ${fmt(service.endDate || 'Present')}</span>
+      </div>
+      <div style="font-style:italic; color:#333;">${fmt(service.organization)}</div>
+      ${service.description ? `<div style="color:#333; line-height:1.4; margin:4px 0; padding-left:16px;">${service.description}</div>` : ''}
+    `);
+
+    return measuredSections;
+  };
+
+  // 获取 entry 的 React 渲染内容（用于最终渲染）
+  const getEntryContent = (type: string, item: any): React.ReactNode => {
+    switch (type) {
+      case 'education':
+        return (
+          <div style={{ marginBottom: '8px' }}>
+            <div style={entryHeaderStyle}>
+              <span style={entryTitleStyle}>{item.institution}</span>
+              <span style={dateStyle}>{item.startDate} – {item.endDate || 'Present'}</span>
+            </div>
+            <div style={entrySubtitleStyle}>
+              {item.degree} in {item.major}
+              {item.location && `, ${item.location}`}
+              {(item.gpa || item.ranking) && (
+                <span style={{ marginLeft: '12px' }}>
+                  {item.gpa && `${item.gpa}`}
+                  {item.gpa && item.ranking && ' | '}
+                  {item.ranking && `${item.ranking}`}
+                </span>
+              )}
+            </div>
+            {item.honors && item.honors.length > 0 && (
+              <div style={{ marginTop: '4px' }}>
+                {item.honors.map((honor: string, i: number) => (
+                  <span key={i} style={honorTagStyle}>{honor}</span>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      case 'researchExperience':
+        return (
+          <div style={{ marginBottom: '10px' }}>
+            <div style={entryHeaderStyle}>
+              <span style={entryTitleStyle}>{item.title}</span>
+              <span style={dateStyle}>{item.startDate} – {item.endDate || 'Present'}</span>
+            </div>
+            <div style={entrySubtitleStyle}>
+              {item.role}, {item.institution}
+              {item.location && `, ${item.location}`}
+              {item.advisor && ` | Advisor: ${item.advisor}`}
+            </div>
+            <ul style={{ ...descriptionStyle, listStyle: 'none', padding: 0, margin: '4px 0' }}>
+              {item.description.map((desc: string, i: number) => (
+                <li key={i} style={bulletPointStyle}>• {desc}</li>
+              ))}
+            </ul>
+          </div>
+        );
+      case 'publications':
+        return (
+          <div style={{ marginBottom: '8px' }}>
+            <div style={{ ...descriptionStyle, paddingLeft: 0 }}>
+              <strong>{item.title}</strong>
+            </div>
+            <div style={{ ...descriptionStyle, paddingLeft: 0 }}>
+              {item.authors.join(', ')}. "{item.title}." <em>{item.venue}</em>, {item.year}.
+              {item.status !== 'published' && (
+                <span style={{ color: '#666' }}> [{item.status.replace('_', ' ')}]</span>
+              )}
+              {item.doi && <div>DOI: {item.doi}</div>}
+            </div>
+          </div>
+        );
+      case 'internshipExperience':
+        return (
+          <div style={{ marginBottom: '10px' }}>
+            <div style={entryHeaderStyle}>
+              <span style={entryTitleStyle}>{item.company}</span>
+              <span style={dateStyle}>{item.startDate} – {item.endDate || 'Present'}</span>
+            </div>
+            <div style={entrySubtitleStyle}>
+              {item.position}
+              {item.location && `, ${item.location}`}
+            </div>
+            <ul style={{ ...descriptionStyle, listStyle: 'none', padding: 0, margin: '4px 0' }}>
+              {item.description.map((desc: string, i: number) => (
+                <li key={i} style={bulletPointStyle}>• {desc}</li>
+              ))}
+            </ul>
+          </div>
+        );
+      case 'projectExperience':
+        return (
+          <div style={{ marginBottom: '10px' }}>
+            <div style={entryHeaderStyle}>
+              <span style={entryTitleStyle}>{item.name}</span>
+              <span style={dateStyle}>{item.startDate} – {item.endDate || 'Present'}</span>
+            </div>
+            <div style={entrySubtitleStyle}>
+              {item.role}
+              {item.url && ` | ${item.url}`}
+            </div>
+            <ul style={{ ...descriptionStyle, listStyle: 'none', padding: 0, margin: '4px 0' }}>
+              {item.description.map((desc: string, i: number) => (
+                <li key={i} style={bulletPointStyle}>• {desc}</li>
+              ))}
+            </ul>
+            {item.technologies && item.technologies.length > 0 && (
+              <div style={{ marginTop: '6px' }}>
+                {item.technologies.map((tech: string, i: number) => (
+                  <span key={i} style={techTagStyle}>{tech}</span>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      case 'awards':
+        return (
+          <div style={{ marginBottom: '6px' }}>
+            <div style={entryHeaderStyle}>
+              <span style={entryTitleStyle}>{item.title}</span>
+              <span style={dateStyle}>{item.date}</span>
+            </div>
+            <div style={entrySubtitleStyle}>{item.issuer}</div>
+            {item.description && (
+              <div style={awardDescriptionStyle}>{item.description}</div>
+            )}
+          </div>
+        );
+      case 'skills':
+        return (
+          <div style={{ marginBottom: '4px' }}>
+            <span style={{ ...entryTitleStyle, marginRight: '8px' }}>
+              {item.category}:
+            </span>
+            <span style={entrySubtitleStyle}>
+              {item.items.join(', ')}
+            </span>
+          </div>
+        );
+      case 'academicService':
+        return (
+          <div style={{ marginBottom: '6px' }}>
+            <div style={entryHeaderStyle}>
+              <span style={entryTitleStyle}>{item.role}</span>
+              <span style={dateStyle}>{item.startDate} – {item.endDate || 'Present'}</span>
+            </div>
+            <div style={entrySubtitleStyle}>{item.organization}</div>
+            {item.description && (
+              <div style={descriptionStyle}>{item.description}</div>
+            )}
+          </div>
+        );
+      default:
+        return null;
+    }
+  };
+
+  // Section heading 样式（复用）
+  const sectionHeadingStyle = {
+    fontSize: getFontSize(),
+    fontFamily: getHeadingFontFamily(),
+    fontWeight: 700,
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.08em',
+    color: '#1a1a1a',
+    borderBottom: config.showSectionBorders ? '1px solid #333' : 'none',
+    paddingBottom: '4px',
+    marginBottom: '10px',
+  };
+
+  const entryHeaderStyle = {
+    display: 'flex' as const,
+    justifyContent: 'space-between',
+    alignItems: 'baseline',
+    marginBottom: '2px',
+  };
+
+  const entryTitleStyle = {
+    fontSize: getFontSize(),
+    fontFamily: getBodyFontFamily(),
+    fontWeight: 600,
+    color: '#1a1a1a',
+  };
+
+  const entrySubtitleStyle = {
+    fontSize: getFontSize(),
+    fontFamily: getBodyFontFamily(),
+    fontStyle: 'italic',
+    color: '#333',
+  };
+
+  const dateStyle = {
+    fontSize: getFontSize(),
+    fontFamily: getBodyFontFamily(),
+    color: '#555',
+    whiteSpace: 'nowrap' as const,
+    marginLeft: '12px',
+  };
+
+  const descriptionStyle = {
+    fontSize: getFontSize(),
+    fontFamily: getBodyFontFamily(),
+    color: '#333',
+    lineHeight: '1.4',
+    margin: '4px 0',
+    paddingLeft: '16px',
+  };
+
+  const bulletPointStyle = {
+    marginBottom: '3px',
+  };
+
+  const honorTagStyle = {
+    display: 'inline-block',
+    backgroundColor: '#f3f4f6',
+    color: '#374151',
+    padding: '2px 8px',
+    borderRadius: '4px',
+    fontSize: getFontSize(),
+    fontFamily: getBodyFontFamily(),
+    marginRight: '6px',
+    marginBottom: '4px',
+    fontWeight: 500,
+  };
+
+  const techTagStyle = {
+    display: 'inline-block',
+    backgroundColor: '#e0e7ff',
+    color: '#3730a3',
+    padding: '2px 8px',
+    borderRadius: '4px',
+    fontSize: getFontSize(),
+    fontFamily: getBodyFontFamily(),
+    marginRight: '6px',
+    marginBottom: '4px',
+    fontWeight: 500,
+  };
+
+  const awardDescriptionStyle = {
+    marginTop: '6px',
+    padding: '8px 12px',
+    backgroundColor: '#f9fafb',
+    borderLeft: '3px solid #d1d5db',
+    borderRadius: '0 4px 4px 0',
+    fontSize: getFontSize(),
+    fontFamily: getBodyFontFamily(),
+    color: '#6b7280',
+    fontStyle: 'italic',
+    lineHeight: '1.5',
+  };
+
+  // 个人信息总是放在第一页顶部
+  const headerContent = (
+    <header
+      id="section-personalInfo"
+      style={{ textAlign: 'center' as const, marginBottom: '20px' }}
+    >
+      <h1 style={{
+        fontSize: '18px', fontFamily: getHeadingFontFamily(), fontWeight: 700,
+        textTransform: 'uppercase' as const, letterSpacing: '0.15em', color: '#1a1a1a', margin: '0 0 8px 0',
+      }}>
+        {personalInfo.name}
+      </h1>
+      <div style={{ fontSize: getFontSize(), fontFamily: getBodyFontFamily(), color: '#555', lineHeight: '1.5' }}>
+        {[personalInfo.email, personalInfo.phone, personalInfo.address].filter(Boolean).join(' | ')}
+        {(personalInfo.website || personalInfo.github || personalInfo.googleScholar) && (
+          <div style={{ marginTop: '2px' }}>
+            {[personalInfo.website, personalInfo.github, personalInfo.googleScholar].filter(Boolean).join(' | ')}
+          </div>
+        )}
+      </div>
+    </header>
+  );
+
+  const createPage = (contents: React.ReactNode[], pageIndex: number) => {
+    return (
+      <div
+        key={`page-${pageIndex}`}
+        className="resume-page"
         style={{
-          textAlign: 'center' as const,
-          marginBottom: '20px',
+          width: `${A4_WIDTH_MM}mm`,
+          height: `${A4_HEIGHT_MM}mm`,
+          backgroundColor: '#fff',
+          padding: `${pageMargin}mm`,
+          boxSizing: 'border-box',
+          boxShadow: '0 2px 10px rgba(0,0,0,0.3)',
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column' as const,
         }}
       >
-        <h1 style={{
-          fontSize: '18px',
-          fontFamily: getHeadingFontFamily(),
-          fontWeight: 700,
-          textTransform: 'uppercase' as const,
-          letterSpacing: '0.15em',
-          color: '#1a1a1a',
-          margin: '0 0 8px 0',
-        }}>
-          {personalInfo.name}
-        </h1>
-        <div style={{
-          fontSize: getFontSize(),
-          fontFamily: getBodyFontFamily(),
-          color: '#555',
-          lineHeight: '1.5',
-        }}>
-          {[
-            personalInfo.email,
-            personalInfo.phone,
-            personalInfo.address,
-          ].filter(Boolean).join(' | ')}
-          {(personalInfo.website || personalInfo.github || personalInfo.googleScholar) && (
-            <div style={{ marginTop: '2px' }}>
-              {[
-                personalInfo.website,
-                personalInfo.github,
-                personalInfo.googleScholar,
-              ].filter(Boolean).join(' | ')}
-            </div>
-          )}
-        </div>
-      </header>
+        {contents}
+      </div>
     );
+  };
 
-    // 个人信息高度估算（包含安全系数）
-    const headerHeight = 35 * getLineHeightFactor() * 1.08; // header 大约占用 35mm
+  // ========== 主分页流程：估算 → 实测 → 以 entry 为单位分页 → 溢出兜底 ==========
+  const paginateContent = () => {
+    const allPages: React.ReactNode[] = [];
 
-    // 创建页面的辅助函数
-    const createPage = (contents: React.ReactNode[], pageIndex: number) => {
-      return (
-        <div
-          key={`page-${pageIndex}`}
-          className="resume-page"
-          style={{
-            width: `${A4_WIDTH_MM}mm`,
-            height: `${A4_HEIGHT_MM}mm`,
-            backgroundColor: '#fff',
-            padding: `${pageMargin}mm`,
-            boxSizing: 'border-box',
-            boxShadow: '0 2px 10px rgba(0,0,0,0.3)',
-            overflow: 'hidden',
-            display: 'flex',
-            flexDirection: 'column' as const,
-          }}
-        >
-          {contents}
-        </div>
-      );
-    };
+    // 有效内容高度（减去溢出修正值，让分页更保守）
+    const effectiveContentHeight = CONTENT_HEIGHT_MM - overflowCorrection;
 
-    // 刷新页面（将当前内容推入页面数组）
-    const flushPage = () => {
-      if (pageContent.length > 0) {
-        allPages.push(createPage(pageContent, pageIdx));
-        pageContent = [];
-        pageHeight = 0;
-        pageIdx++;
-      }
-    };
+    // --- Pass 1: 渲染到隐藏容器，测量真实高度 ---
+    const measureContainer = createHiddenContainer();
+    document.body.appendChild(measureContainer);
 
-    // 构建所有模块
-    const sections: { name: string; content: React.ReactNode; height: number }[] = [];
-
-    const sectionStyle = {
-      marginBottom: '16px',
-    };
-
-    const sectionHeadingStyle = {
-      fontSize: getFontSize(),
-      fontFamily: getHeadingFontFamily(),
-      fontWeight: 700,
-      textTransform: 'uppercase' as const,
-      letterSpacing: '0.08em',
-      color: '#1a1a1a',
-      borderBottom: config.showSectionBorders ? '1px solid #333' : 'none',
-      paddingBottom: '4px',
-      marginBottom: '10px',
-    };
-
-    const entryHeaderStyle = {
-      display: 'flex' as const,
-      justifyContent: 'space-between',
-      alignItems: 'baseline',
-      marginBottom: '2px',
-    };
-
-    const entryTitleStyle = {
-      fontSize: getFontSize(),
-      fontFamily: getBodyFontFamily(),
-      fontWeight: 600,
-      color: '#1a1a1a',
-    };
-
-    const entrySubtitleStyle = {
-      fontSize: getFontSize(),
-      fontFamily: getBodyFontFamily(),
-      fontStyle: 'italic',
-      color: '#333',
-    };
-
-    const dateStyle = {
-      fontSize: getFontSize(),
-      fontFamily: getBodyFontFamily(),
-      color: '#555',
-      whiteSpace: 'nowrap' as const,
-      marginLeft: '12px',
-    };
-
-    const descriptionStyle = {
-      fontSize: getFontSize(),
-      fontFamily: getBodyFontFamily(),
-      color: '#333',
-      lineHeight: '1.4',
-      margin: '4px 0',
-      paddingLeft: '16px',
-    };
-
-    const bulletPointStyle = {
-      marginBottom: '3px',
-    };
-
-    // Honors 标签样式
-    const honorTagStyle = {
-      display: 'inline-block',
-      backgroundColor: '#f3f4f6',
-      color: '#374151',
-      padding: '2px 8px',
-      borderRadius: '4px',
-      fontSize: getFontSize(),
-      fontFamily: getBodyFontFamily(),
-      marginRight: '6px',
-      marginBottom: '4px',
-      fontWeight: 500,
-    };
-
-    // Technology 标签样式
-    const techTagStyle = {
-      display: 'inline-block',
-      backgroundColor: '#e0e7ff',
-      color: '#3730a3',
-      padding: '2px 8px',
-      borderRadius: '4px',
-      fontSize: getFontSize(),
-      fontFamily: getBodyFontFamily(),
-      marginRight: '6px',
-      marginBottom: '4px',
-      fontWeight: 500,
-    };
-
-    // Award description 样式（引用块）
-    const awardDescriptionStyle = {
-      marginTop: '6px',
-      padding: '8px 12px',
-      backgroundColor: '#f9fafb',
-      borderLeft: '3px solid #d1d5db',
-      borderRadius: '0 4px 4px 0',
-      fontSize: getFontSize(),
-      fontFamily: getBodyFontFamily(),
-      color: '#6b7280',
-      fontStyle: 'italic',
-      lineHeight: '1.5',
-    };
-
-    // 估算单个条目高度（使用合理的安全系数）
-    const estimateEntryHeight = (item: any, type: string): number => {
-      const factor = getLineHeightFactor();
-      const safetyMargin = 1.08; // 8% 的安全系数
-      let height = LINE_HEIGHT_MM * 2 * factor * safetyMargin; // 基本行高
-
-      if (type === 'education') {
-        height += LINE_HEIGHT_MM * 1.5 * factor * safetyMargin; // institution + degree
-        if (item.honors?.length) height += LINE_HEIGHT_MM * 0.9 * factor * safetyMargin * item.honors.length;
-      } else if (type === 'research' || type === 'internship' || type === 'project') {
-        height += LINE_HEIGHT_MM * 1.5 * factor * safetyMargin; // title + role
-        const descCount = item.description?.length || 0;
-        // 每个 bullet point 估算为 1.8 行（考虑换行）
-        height += LINE_HEIGHT_MM * 2.0 * factor * safetyMargin * Math.max(descCount, 1);
-      } else if (type === 'publication') {
-        height += LINE_HEIGHT_MM * 3.5 * factor * safetyMargin; // title + authors + venue
-      } else if (type === 'award') {
-        height += LINE_HEIGHT_MM * 1.5 * factor * safetyMargin;
-        if (item.description) height += LINE_HEIGHT_MM * 2.8 * factor * safetyMargin; // description 占用多行
-      } else if (type === 'skill') {
-        height += LINE_HEIGHT_MM * 1.5 * factor * safetyMargin;
-      } else if (type === 'service') {
-        height += LINE_HEIGHT_MM * 1.5 * factor * safetyMargin;
-        if (item.description) height += LINE_HEIGHT_MM * 2.0 * factor * safetyMargin;
-      }
-
-      return height + 6; // 额外间距
-    };
-
-    // 添加模块的辅助函数
-    const addSection = (title: string, items: any[], type: string, renderFunc: (item: any, idx: number) => React.ReactNode) => {
-      if (items.length === 0) return;
-
-      // 计算整个 section 的高度（包含安全系数）
-      const safetyMargin = 1.08;
-      let sectionHeight = LINE_HEIGHT_MM * 2.5 * getLineHeightFactor() * safetyMargin; // section heading
-      const itemHeights: number[] = [];
-      items.forEach((item) => {
-        const h = estimateEntryHeight(item, type);
-        sectionHeight += h;
-        itemHeights.push(h);
-      });
-
-      const sectionContent = (
-        <section
-          key={sections.length}
-          id={`section-${type}`}
-          style={{
-            ...sectionStyle,
-            breakInside: 'avoid' as const,
-          }}
-        >
-          <h2 style={sectionHeadingStyle}>{title}</h2>
-          {items.map((item, idx) => renderFunc(item, idx))}
-        </section>
-      );
-
-      sections.push({
-        name: title,
-        content: sectionContent,
-        height: sectionHeight,
-      });
-    };
-
-    // 构建各模块
-    addSection('Education', education, 'education', (edu, idx) => (
-      <div key={idx} style={{ marginBottom: '8px' }}>
-        <div style={entryHeaderStyle}>
-          <span style={entryTitleStyle}>
-            {edu.institution}
-          </span>
-          <span style={dateStyle}>
-            {edu.startDate} – {edu.endDate || 'Present'}
-          </span>
-        </div>
-        <div style={entrySubtitleStyle}>
-          {edu.degree} in {edu.major}
-          {edu.location && `, ${edu.location}`}
-          {(edu.gpa || edu.ranking) && (
-            <span style={{ marginLeft: '12px' }}>
-              {edu.gpa && `${edu.gpa}`}
-              {edu.gpa && edu.ranking && ' | '}
-              {edu.ranking && `${edu.ranking}`}
-            </span>
-          )}
-        </div>
-        {edu.honors && edu.honors.length > 0 && (
-          <div style={{ marginTop: '4px' }}>
-            {edu.honors.map((honor, i) => (
-              <span key={i} style={honorTagStyle}>{honor}</span>
-            ))}
-          </div>
-        )}
-      </div>
-    ));
-
-    addSection('Research Experience', researchExperience, 'researchExperience', (research, idx) => (
-      <div key={idx} style={{ marginBottom: '10px' }}>
-        <div style={entryHeaderStyle}>
-          <span style={entryTitleStyle}>{research.title}</span>
-          <span style={dateStyle}>
-            {research.startDate} – {research.endDate || 'Present'}
-          </span>
-        </div>
-        <div style={entrySubtitleStyle}>
-          {research.role}, {research.institution}
-          {research.location && `, ${research.location}`}
-          {research.advisor && ` | Advisor: ${research.advisor}`}
-        </div>
-        <ul style={{
-          ...descriptionStyle,
-          listStyle: 'none',
-          padding: 0,
-          margin: '4px 0',
-        }}>
-          {research.description.map((desc, i) => (
-            <li key={i} style={bulletPointStyle}>• {desc}</li>
-          ))}
-        </ul>
-      </div>
-    ));
-
-    addSection('Publications', publications, 'publications', (pub, idx) => (
-      <div key={idx} style={{ marginBottom: '8px' }}>
-        <div style={{ ...descriptionStyle, paddingLeft: 0 }}>
-          <strong>{pub.title}</strong>
-        </div>
-        <div style={{ ...descriptionStyle, paddingLeft: 0 }}>
-          {pub.authors.join(', ')}. "{pub.title}." <em>{pub.venue}</em>, {pub.year}.
-          {pub.status !== 'published' && (
-            <span style={{ color: '#666' }}> [{pub.status.replace('_', ' ')}]</span>
-          )}
-          {pub.doi && <div>DOI: {pub.doi}</div>}
+    // 测量 header 高度
+    const headerWrapper = document.createElement('div');
+    headerWrapper.style.marginBottom = '20px';
+    headerWrapper.innerHTML = `
+      <div style="text-align:center; font-size:${getFontSize()}; font-family:${getHeadingFontFamily()};">
+        <h1 style="font-size:18px; font-weight:700; text-transform:uppercase; letter-spacing:0.15em; margin:0 0 8px 0; color:#1a1a1a;">${personalInfo.name || 'Name'}</h1>
+        <div style="line-height:1.5; color:#555;">
+          ${[personalInfo.email, personalInfo.phone, personalInfo.address].filter(Boolean).join(' | ')}
+          ${(personalInfo.website || personalInfo.github || personalInfo.googleScholar) ? `<div style="margin-top:2px;">${[personalInfo.website, personalInfo.github, personalInfo.googleScholar].filter(Boolean).join(' | ')}</div>` : ''}
         </div>
       </div>
-    ));
+    `;
+    measureContainer.appendChild(headerWrapper);
+    void headerWrapper.getBoundingClientRect();
+    const headerHeightMm = headerWrapper.getBoundingClientRect().height / PX_PER_MM;
 
-    addSection('Professional Experience', internshipExperience, 'internshipExperience', (internship, idx) => (
-      <div key={idx} style={{ marginBottom: '10px' }}>
-        <div style={entryHeaderStyle}>
-          <span style={entryTitleStyle}>{internship.company}</span>
-          <span style={dateStyle}>
-            {internship.startDate} – {internship.endDate || 'Present'}
-          </span>
-        </div>
-        <div style={entrySubtitleStyle}>
-          {internship.position}
-          {internship.location && `, ${internship.location}`}
-        </div>
-        <ul style={{
-          ...descriptionStyle,
-          listStyle: 'none',
-          padding: 0,
-          margin: '4px 0',
-        }}>
-          {internship.description.map((desc, i) => (
-            <li key={i} style={bulletPointStyle}>• {desc}</li>
-          ))}
-        </ul>
-      </div>
-    ));
+    // 测量所有 section
+    const measuredSections = buildSectionElements(measureContainer);
 
-    addSection('Projects', projectExperience, 'projectExperience', (project, idx) => (
-      <div key={idx} style={{ marginBottom: '10px' }}>
-        <div style={entryHeaderStyle}>
-          <span style={entryTitleStyle}>{project.name}</span>
-          <span style={dateStyle}>
-            {project.startDate} – {project.endDate || 'Present'}
-          </span>
-        </div>
-        <div style={entrySubtitleStyle}>
-          {project.role}
-          {project.url && ` | ${project.url}`}
-        </div>
-        <ul style={{
-          ...descriptionStyle,
-          listStyle: 'none',
-          padding: 0,
-          margin: '4px 0',
-        }}>
-          {project.description.map((desc, i) => (
-            <li key={i} style={bulletPointStyle}>• {desc}</li>
-          ))}
-        </ul>
-        {project.technologies && project.technologies.length > 0 && (
-          <div style={{ marginTop: '6px' }}>
-            {project.technologies.map((tech, i) => (
-              <span key={i} style={techTagStyle}>{tech}</span>
-            ))}
-          </div>
-        )}
-      </div>
-    ));
+    // 清理隐藏容器
+    document.body.removeChild(measureContainer);
 
-    addSection('Honors & Awards', awards, 'awards', (award, idx) => (
-      <div key={idx} style={{ marginBottom: '6px' }}>
-        <div style={entryHeaderStyle}>
-          <span style={entryTitleStyle}>{award.title}</span>
-          <span style={dateStyle}>{award.date}</span>
-        </div>
-        <div style={entrySubtitleStyle}>{award.issuer}</div>
-        {award.description && (
-          <div style={awardDescriptionStyle}>{award.description}</div>
-        )}
-      </div>
-    ));
-
-    addSection('Skills', skills, 'skills', (skill, idx) => (
-      <div key={idx} style={{ marginBottom: '4px' }}>
-        <span style={{ ...entryTitleStyle, marginRight: '8px' }}>
-          {skill.category}:
-        </span>
-        <span style={entrySubtitleStyle}>
-          {skill.items.join(', ')}
-        </span>
-      </div>
-    ));
-
-    addSection('Academic Service', academicService, 'academicService', (service, idx) => (
-      <div key={idx} style={{ marginBottom: '6px' }}>
-        <div style={entryHeaderStyle}>
-          <span style={entryTitleStyle}>{service.role}</span>
-          <span style={dateStyle}>
-            {service.startDate} – {service.endDate || 'Present'}
-          </span>
-        </div>
-        <div style={entrySubtitleStyle}>{service.organization}</div>
-        {service.description && (
-          <div style={descriptionStyle}>{service.description}</div>
-        )}
-      </div>
-    ));
-
-    // 第一页包含 header
-    pageContent = [headerContent];
-    pageHeight = headerHeight;
-
-    // 分配模块到页面
-    for (const section of sections) {
-      if (pageHeight + section.height > CONTENT_HEIGHT_MM && pageContent.length > 0) {
-        // 当前页放不下，创建新页
-        flushPage();
-      }
-
-      pageContent.push(section.content);
-      pageHeight += section.height;
+    // --- Pass 2: 以 entry 为单位分页 ---
+    // 将所有 entry 展平成线性列表，每个 entry 知道属于哪个 section
+    interface PageEntry {
+      sectionTitle: string;
+      sectionType: string;
+      isSectionStart: boolean; // 该 entry 是否是所在 section 的第一个
+      content: React.ReactNode;
+      heightMm: number;
     }
 
-    // 刷新最后一页
-    flushPage();
+    const flatEntries: PageEntry[] = [];
+    measuredSections.forEach(section => {
+      section.entries.forEach((entry, idx) => {
+        flatEntries.push({
+          sectionTitle: section.title,
+          sectionType: section.type,
+          isSectionStart: idx === 0,
+          content: entry.content,
+          heightMm: entry.heightMm,
+        });
+      });
+    });
 
+    // 分页
+    interface PageLayout {
+      hasHeader: boolean;
+      entries: PageEntry[];
+    }
+
+    const pages: PageLayout[] = [];
+    let entryIdx = 0;
+
+    while (entryIdx < flatEntries.length) {
+      const page: PageLayout = {
+        hasHeader: pages.length === 0,
+        entries: [],
+      };
+
+      let usedHeight = page.hasHeader ? headerHeightMm : 0;
+
+      // 以 entry 为单位放入当前页
+      while (entryIdx < flatEntries.length) {
+        const entry = flatEntries[entryIdx];
+
+        if (entry.isSectionStart && page.entries.length > 0) {
+          // 新 section 的 heading 需要额外高度
+          const section = measuredSections.find(s => s.type === entry.sectionType);
+          const headingCost = section ? section.headingHeightMm : 0;
+          const totalCost = entry.heightMm + headingCost;
+          if (usedHeight + totalCost > effectiveContentHeight) {
+            break; // 放不下 heading + entry，换页
+          }
+          usedHeight += headingCost;
+        }
+
+        if (usedHeight + entry.heightMm > effectiveContentHeight && page.entries.length > 0) {
+          break; // 放不下这个 entry，换页
+        }
+
+        page.entries.push(entry);
+        usedHeight += entry.heightMm;
+        entryIdx++;
+      }
+
+      // 如果一页都没放进任何 entry（只剩 header 或空页），防止死循环
+      if (page.entries.length === 0 && pages.length > 0) {
+        // 强制放入一个 entry（即使超出）
+        page.entries.push(flatEntries[entryIdx]);
+        entryIdx++;
+      }
+
+      pages.push(page);
+
+      // 防止无限循环
+      if (pages.length > 50) break;
+    }
+
+    // --- Pass 3: 构建最终页面 ---
+    pages.forEach((pageLayout, pageIdx) => {
+      const pageContents: React.ReactNode[] = [];
+
+      if (pageLayout.hasHeader) {
+        pageContents.push(headerContent);
+      }
+
+      // 按 section 分组渲染
+      let currentSectionType = '';
+
+      pageLayout.entries.forEach((entry, idx) => {
+        if (entry.sectionType !== currentSectionType) {
+          currentSectionType = entry.sectionType;
+          pageContents.push(
+            <h2 key={`heading-${pageIdx}-${idx}`} style={sectionHeadingStyle}>
+              {entry.sectionTitle}
+            </h2>
+          );
+        }
+        pageContents.push(
+          <div key={`entry-${pageIdx}-${idx}`}>
+            {entry.content}
+          </div>
+        );
+      });
+
+      allPages.push(createPage(pageContents, pageIdx));
+    });
+
+    // --- Pass 4: 溢出兜底检测 ---
+    // 在下一个 effect 中通过 DOM 测量检测溢出，如有溢出则触发修正分页
     setPages(allPages);
   };
 
+  // 溢出检测与修正：渲染后检测是否溢出，如有则触发修正
+  const [overflowCorrection, setOverflowCorrection] = useState(0);
+
   useEffect(() => {
     paginateContent();
-  }, [data, pageMargin, config.fontSize]);
+  }, [data, pageMargin, config.fontSize, config.showSectionBorders, overflowCorrection]);
+
+  // 溢出兜底检测：渲染后测量每页实际高度，如有溢出则自动修正
+  useEffect(() => {
+    if (pages.length === 0 || !contentRef.current) return;
+
+    const pageEls = contentRef.current.querySelectorAll('.resume-page');
+    if (pageEls.length === 0) return;
+
+    let overflowDetected = false;
+    let overflowAmount = 0;
+
+    pageEls.forEach((pageEl) => {
+      // scrollHeight includes ALL content (even clipped overflow), clientHeight is the element's set height
+      const actualContentMm = pageEl.scrollHeight / PX_PER_MM;
+      const elementHeightMm = pageEl.clientHeight / PX_PER_MM;
+
+      // If scrollHeight > clientHeight, content is overflowing
+      if (actualContentMm > elementHeightMm + 0.5) {
+        overflowDetected = true;
+        overflowAmount = Math.max(overflowAmount, actualContentMm - elementHeightMm);
+      }
+    });
+
+    if (overflowDetected) {
+      // 触发修正：增加一个小的惩罚值，让下次分页时更保守
+      setOverflowCorrection(prev => prev + Math.ceil(overflowAmount));
+    }
+  }, [pages]);
 
   return (
     <div
@@ -554,9 +780,11 @@ export default function ResumePreview({ data, onExportPDF }: PreviewProps) {
       </div>
 
       {/* 多页内容 */}
-      <div ref={contentRef} id="resume-content" style={{ display: 'flex', flexDirection: 'column' as const, gap: '20px' }}>
-        {pages}
-      </div>
+      <PreviewErrorBoundary>
+        <div ref={contentRef} id="resume-content" style={{ display: 'flex', flexDirection: 'column' as const, gap: '20px' }}>
+          {pages}
+        </div>
+      </PreviewErrorBoundary>
 
       <style>{`
         @media print {

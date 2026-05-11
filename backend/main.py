@@ -9,7 +9,7 @@ app = FastAPI(title="Academic CV Editor API")
 # CORS 配置 - 允许前端访问
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],  # Vite 默认端口
+    allow_origins=["*"],  # 生产环境中应限制为具体域名
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
