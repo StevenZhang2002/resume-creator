@@ -32,7 +32,7 @@ jobs:
           context: .
           file: backend/Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository }}/backend:latest
+          tags: ghcr.io/stevenzhang2002/resume-creator/backend:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -43,7 +43,7 @@ jobs:
           context: .
           file: frontend/Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository }}/frontend:latest
+          tags: ghcr.io/stevenzhang2002/resume-creator/frontend:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -56,7 +56,7 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SERVER_PORT || '22' }}
           script: |
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u stevenzhang2002 --password-stdin
             cd ${{ secrets.DEPLOY_PATH || '/opt/resume-creator' }}
             docker compose pull
             docker compose up -d --remove-orphans
