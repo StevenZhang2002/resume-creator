@@ -20,7 +20,7 @@ export default function ResumeForm({ data, onChange }: ResumeFormProps) {
     });
   };
 
-  const inputStyle = {
+  const inputStyle: React.CSSProperties = {
     width: '100%',
     padding: '8px 12px',
     backgroundColor: '#374151',
@@ -117,7 +117,7 @@ export default function ResumeForm({ data, onChange }: ResumeFormProps) {
   );
 
   return (
-    <div style={{ padding: '20px', color: '#fff', overflow: 'auto', height: '100%', boxSizing: 'border-box' }}>
+    <div style={{ padding: '20px', color: '#fff', overflow: 'auto', height: '100%', boxSizing: 'border-box' } as React.CSSProperties}>
 
       {/* 个人信息 */}
       <section style={sectionStyle}>
@@ -389,7 +389,7 @@ export default function ResumeForm({ data, onChange }: ResumeFormProps) {
                 <label style={labelStyle}>Status</label>
                 <select style={inputStyle} value={pub.status} onChange={(e) => {
                   const items = [...data.publications];
-                  items[idx] = { ...pub, status: e.target.value };
+                  items[idx] = { ...pub, status: e.target.value as typeof pub.status };
                   onChange({ ...data, publications: items });
                 }}>
                   <option value="published">Published</option>
