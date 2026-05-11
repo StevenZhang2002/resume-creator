@@ -51,10 +51,10 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SERVER_PORT || 22 }}
+          port: ${{ secrets.SERVER_PORT || '22' }}
           script: |
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-            cd ${{ secrets.DEPLOY_PATH || /opt/resume-creator }}
+            cd ${{ secrets.DEPLOY_PATH || '/opt/resume-creator' }}
             docker compose pull
             docker compose up -d --remove-orphans
             docker image prune -f
